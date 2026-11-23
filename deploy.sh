@@ -19,6 +19,7 @@ check_target() {
         die "This archive targets ${target[1]} ${target[2]} x86_64"
     case "${target[0]}:$VERSION_ID" in
         redos73:7.3|redos73:7.3.*|redos8:8|redos8:8.*) ;;
+        almalinux9:9|almalinux9:9.*) ;;
         *) [[ $VERSION_ID == "${target[2]}" ]] || die "Unexpected release $VERSION_ID" ;;
     esac
     family=${target[3]}
@@ -70,6 +71,7 @@ deps() (
         tmp=$(mktemp -d)
         trap 'rm -rf -- "$tmp"' EXIT
         chmod 0755 "$tmp"
+        install -d -m 0700 "$tmp/lists/partial"
         printf 'deb [trusted=yes] file:%s/packages ./\n' "$here" > "$tmp/sources.list"
         args=(-o "Dir::Etc::sourcelist=$tmp/sources.list" -o 'Dir::Etc::sourceparts=-'
             -o "Dir::State::lists=$tmp/lists" -o 'Acquire::Languages=none')
