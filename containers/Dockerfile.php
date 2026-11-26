@@ -1,15 +1,33 @@
-FROM php:8.5.13-apache-trixie
-ARG JOBS=4
-RUN set -eux; apt-get update; apt-get install -y --no-install-recommends \
-    libbz2-dev libfreetype-dev libgmp-dev libicu-dev libjpeg62-turbo-dev libldap-dev \
-    libpng-dev libpq-dev libpspell-dev libsasl2-dev libwebp-dev libxslt1-dev libzip-dev; \
-    docker-php-ext-configure gd --with-freetype --with-jpeg --with-webp; \
-    docker-php-ext-configure ldap --with-libdir="lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)" --with-ldap-sasl; \
-    docker-php-ext-install -j"$JOBS" bcmath bz2 calendar exif gd gettext gmp intl ldap mysqli \
-        pcntl pdo_mysql pdo_pgsql pgsql shmop sockets sysvmsg sysvsem sysvshm xsl zip; \
-    curl -fsSL --retry 3 https://pecl.php.net/get/pspell-1.0.1.tgz -o /tmp/pspell.tgz; \
-    tar -xzf /tmp/pspell.tgz -C /tmp; cd /tmp/pspell-1.0.1; phpize; \
-    ./configure --with-pspell=/usr --with-libdir="lib/$(dpkg-architecture -qDEB_HOST_MULTIARCH)"; \
-    make -j"$JOBS"; make install; docker-php-ext-enable pspell; \
-    php -r 'exit(PHP_VERSION !== "8.5.13" || !function_exists("mysqli_report") || !extension_loaded("pspell") || !gd_info()["WebP Support"]);'; \
-    apache2ctl configtest; rm -rf /var/lib/apt/lists/* /tmp/pspell*
+FROM debian:trixie-slim
+ARG PHP_VERSION=8.5.13
+RUN set -eux; \
+    export DEBIAN_FRONTEND=noninteractive; \
+    apt-get update -o APT::Update::Error-Mode=any; \
+    apt-get install -y --no-install-recommends ca-certificates curl; \
+    curl -fsSL --retry 3 https://packages.sury.org/debsuryorg-archive-keyring.deb -o /tmp/sury-keyring.deb; \
+    dpkg -i /tmp/sury-keyring.deb; \
+    printf '%s\n' 'deb [signed-by=/usr/share/keyrings/debsuryorg-archive-keyring.gpg] https://packages.sury.org/php/ trixie main' \
+        > /etc/apt/sources.list.d/sury-php.list; \
+    apt-get update -o APT::Update::Error-Mode=any; \
+    series="${PHP_VERSION%.*}"; \
+    version="$(apt-cache madison "libapache2-mod-php$series" | awk -F'|' -v want="$PHP_VERSION" '{ \
+        v=$2; gsub(/[[:space:]]/, "", v); upstream=v; sub(/^[0-9]+:/, "", upstream); \
+        if (index(upstream, want "-") == 1) { print v; exit } }')"; \
+    if [ -z "$version" ]; then echo "PHP $PHP_VERSION is unavailable in the signed repository" >&2; exit 1; fi; \
+    set -- "libapache2-mod-php$series=$version"; \
+    for ext in cli common bcmath bz2 curl gd gmp intl ldap mbstring mysql pgsql sqlite3 xml zip; do \
+        set -- "$@" "php$series-$ext=$version"; \
+    done; \
+    apt-get install -y --no-install-recommends apache2 "$@" "php$series-pspell"; \
+    a2dismod mpm_event mpm_worker; \
+    a2enmod mpm_prefork "php$series" rewrite headers; \
+    printf '%s\n' 'ServerName localhost' '<Directory /var/www/html>' '    AllowOverride All' \
+        '    Options -Indexes' '</Directory>' > /etc/apache2/conf-available/site.conf; \
+    a2enconf site; \
+    "php$series" -r 'exit(PHP_VERSION !== $argv[1] || !function_exists("mysqli_report") || !extension_loaded("pspell") || !gd_info()["WebP Support"]);' "$PHP_VERSION"; \
+    apache2ctl configtest; \
+    apache2ctl -M | grep -q 'php_module'; \
+    rm -rf /var/lib/apt/lists/* /tmp/sury-keyring.deb
+EXPOSE 80
+STOPSIGNAL SIGWINCH
+CMD ["sh", "-c", ". /etc/apache2/envvars && mkdir -p \"$APACHE_RUN_DIR\" \"$APACHE_LOCK_DIR\" && rm -f \"$APACHE_PID_FILE\" && exec /usr/sbin/apache2 -D FOREGROUND"]
