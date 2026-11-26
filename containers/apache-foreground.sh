@@ -1,6 +1,10 @@
 #!/bin/sh
 set -eu
-. /etc/apache2/envvars
+export APACHE_CONFDIR=/etc/apache2
+# Debian and host-provided envvars may refer to optional unset variables.
+set +u
+. "$APACHE_CONFDIR/envvars"
+set -u
 mkdir -p "$APACHE_RUN_DIR" "$APACHE_LOCK_DIR"
 if [ -n "${PHPRC:-}" ] && [ ! -r "$PHPRC" ]; then
     printf 'Cannot read PHP configuration: %s\n' "$PHPRC" >&2

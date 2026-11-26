@@ -35,6 +35,9 @@ RUN set -eu; \
     apache-foreground & pid=$!; \
     trap 'kill "$pid" 2>/dev/null || true; wait "$pid" || true' EXIT; \
     for attempt in 1 2 3 4 5; do \
+        if ! kill -0 "$pid" 2>/dev/null; then \
+            printf '%s\n' 'Apache stopped before the HTTP check' >&2; exit 1; \
+        fi; \
         if result=$(curl --noproxy '*' --silent --max-time 3 http://127.0.0.1/check-php.php); then break; fi; \
         sleep 1; \
     done; \
