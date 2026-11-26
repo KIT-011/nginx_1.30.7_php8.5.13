@@ -30,23 +30,19 @@ bash build.sh prepare ubuntu24
 
 ### PageSpeed для Ubuntu, Debian и AlmaLinux 9
 
-Подготовьте зависимости Bazel один раз. Используйте исходники нативного модуля We-Amp и зафиксируйте конкретный тег. При переходе между профилями запускайте сборки PageSpeed последовательно в одном checkout.
+Используйте исходники нативного модуля We-Amp и зафиксируйте конкретный тег. При переходе между профилями запускайте сборки PageSpeed последовательно в одном checkout.
 
 ```bash
 git clone https://github.com/We-Amp/mod_pagespeed.git pagespeed-src
 tag=$(git -C pagespeed-src tag --list 'v*' --sort=-v:refname | head -n 1)
 test -n "$tag" && git -C pagespeed-src checkout --detach "$tag"
 
-(
-    cd pagespeed-src
-    docker compose up -d dev
-    trap 'docker compose down' EXIT
-    docker compose exec -T dev tools/vendor-deps.sh
-)
 bash build.sh pagespeed ubuntu24 ./pagespeed-src
 ```
 
 `build.sh pagespeed` передаёт upstream-скрипту версию nginx 1.30.7 и SHA-256 проверенного архива. Он сохраняет модуль в `work/pagespeed/ubuntu24` с данными сборки. Скрипт `build` проверяет загрузку этого модуля вместе с другими модулями в собранный nginx. Если версия upstream требует отдельного шага, выполните его по [инструкции сборки PageSpeed](https://ngxpagespeed.com/install/from-source/). Внешний результат можно указать через `PAGESPEED_DIR`, в каталоге должны быть `ngx_pagespeed_module.so` и `BUILD.txt`.
+
+Команда `pagespeed` использует готовый `vendor/` или заполняет его через `tools/vendor-deps.sh`. Для этого она собирает образ из Dockerfile We-Amp с отключённым унаследованным источником `download.docker.com`. Если подготовка зависимостей прервалась, повторите команду `pagespeed` с тем же профилем и checkout. Если образ `offline-stack-build:debian13` уже собран, повторный `prepare debian13` можно пропустить.
 
 ### Сборка пакета
 

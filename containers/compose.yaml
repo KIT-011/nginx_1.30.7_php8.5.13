@@ -1,0 +1,17 @@
+services:
+  nginx:
+    image: offline-nginx:1.30.8
+    pull_policy: never
+    restart: unless-stopped
+    ports:
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-8080}:80"
+    depends_on:
+      - php
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+  php:
+    image: offline-php-apache:8.5.13
+    pull_policy: never
+    restart: unless-stopped
+    volumes:
+      - "${SITE_DIR:-./site}:/var/www/html"

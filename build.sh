@@ -226,16 +226,90 @@ PHPTEST
     die "Apache did not run the new PHP module"
 )
 
+prepare_pagespeed_vendor() (
+    local checkout=$1 vendor=$1/vendor incomplete=$1/vendor/.offline-stack-incomplete
+    local image=offline-stack-pagespeed-vendor dockerfile
+    if [[ -d $vendor/repo-cache/content_addressable && -s $vendor/cyclone/BUILD.bazel && ! -e $incomplete ]]; then
+        return
+    fi
+    [[ -f $checkout/docker/Dockerfile && -f $checkout/tools/vendor-deps.sh ]] ||
+        die 'The We-Amp checkout is missing the developer Dockerfile or tools/vendor-deps.sh'
+    printf '== Prepare PageSpeed dependencies ==\n'
+    # The Envoy base enables a Docker APT source that this build does not use.
+    dockerfile=$(mktemp)
+    trap 'rm -f -- "$dockerfile"' EXIT
+    sed '/^FROM /r /dev/stdin' "$checkout/docker/Dockerfile" > "$dockerfile" <<'DOCKERFILE'
+RUN for source in /etc/apt/sources.list /etc/apt/sources.list.d/*.list; do \
+        [ ! -f "$source" ] || sed -i '\|^[[:space:]]*deb.*https://download[.]docker[.]com/linux/ubuntu|s/^/# /' "$source" || exit 1; \
+    done; \
+    for source in /etc/apt/sources.list.d/*.sources; do \
+        if [ -f "$source" ] && grep -Fq 'https://download.docker.com/linux/ubuntu' "$source"; then \
+            mv "$source" "$source.disabled" || exit 1; \
+        fi; \
+    done
+DOCKERFILE
+    docker build --platform linux/amd64 --progress=plain --load \
+        -t "$image" -f - "$checkout/docker" < "$dockerfile"
+    mkdir -p "$vendor"
+    touch "$incomplete"
+    docker run --rm --pull=never --platform linux/amd64 \
+        --mount "type=bind,src=$checkout,dst=/src" --workdir /src \
+        --entrypoint bash "$image" -ec '
+            aom_commit=$(sed -nE "s/^[[:space:]]*AOM_COMMIT[[:space:]]*=[[:space:]]*\"([a-f0-9]{40})\".*/\\1/p" bazel/repositories.bzl)
+            if [[ -n $aom_commit ]]; then
+                aom_origin=https://aomedia.googlesource.com/aom
+                aom_repo=$(mktemp -d)
+                git init --quiet --bare "$aom_repo"
+                for url in "$aom_origin" \
+                    https://android.googlesource.com/platform/external/libaom \
+                    https://repo.or.cz/aom.mirror.git; do
+                    printf "== Fetch libaom %s from %s ==\n" "$aom_commit" "$url"
+                    aom_ref=$aom_commit
+                    if [[ $url == https://repo.or.cz/aom.mirror.git && $aom_commit == 3b624af45b86646a20b11a9ff803aeae588cdee6 ]]; then
+                        aom_ref=refs/tags/v3.12.0
+                    fi
+                    if git -C "$aom_repo" -c http.version=HTTP/1.1 -c http.lowSpeedLimit=1 -c http.lowSpeedTime=30 \
+                        fetch --depth=1 --no-tags "$url" "$aom_ref" &&
+                        [[ $(git -C "$aom_repo" rev-parse "FETCH_HEAD^{commit}") == "$aom_commit" ]]; then
+                        git -C "$aom_repo" update-ref HEAD "$aom_commit"
+                        break
+                    fi
+                done
+                if ! git -C "$aom_repo" rev-parse --verify HEAD >/dev/null 2>&1; then
+                    printf "Error: Could not fetch pinned libaom commit %s\n" "$aom_commit" >&2
+                    exit 1
+                fi
+                # The upstream vendor script clones the canonical URL.
+                git config --global "url.file://$aom_repo.insteadOf" "$aom_origin"
+            fi
+            # Keep the original registry URLs in the lockfile and cache keys.
+            downloader_config=$(mktemp)
+            printf "%s\n" \
+                "rewrite ^bcr[.]bazel[.]build/(.*)\$ raw.githubusercontent.com/bazelbuild/bazel-central-registry/main/\$1" \
+                "rewrite ^bcr[.]bazel[.]build/(.*)\$ bcr.bazel.build/\$1" \
+                > "$downloader_config"
+            bazel_help=$(bazel help fetch)
+            downloader_flag=--downloader_config
+            if ! grep -q -- "--downloader_config" <<< "$bazel_help"; then
+                downloader_flag=--experimental_downloader_config
+            fi
+            printf "\nfetch %s=%s\n" "$downloader_flag" "$downloader_config" >> "$HOME/.bazelrc"
+            bash tools/vendor-deps.sh
+        '
+    rm -f "$incomplete"
+)
+
 build_pagespeed() (
     [[ $pagespeed != none ]] || die "No documented PageSpeed build target for $profile"
-    local checkout=${1:-} result sha tmp
-    [[ -n $checkout ]] || die 'Pass the prepared We-Amp mod_pagespeed checkout path'
+    local checkout=${1:-} result sha tmp git_status
+    [[ -n $checkout ]] || die 'Pass the We-Amp mod_pagespeed checkout path'
     checkout=$(cd -- "$checkout" && pwd -P)
-    [[ -d $checkout/vendor && -f $checkout/install/nginx/build_module_in_container.sh ]] ||
-        die "Prepare the We-Amp checkout and vendor directory first"
+    [[ -f $checkout/install/nginx/build_module_in_container.sh ]] ||
+        die 'The We-Amp checkout is missing install/nginx/build_module_in_container.sh'
     [[ -f $sources/SHA256SUMS ]] || die 'Run prepare first'
-    [[ -z $(git -C "$checkout" status --porcelain --untracked-files=no) ]] ||
-        die "We-Amp checkout has modified tracked files"
+    git_status=$(git -C "$checkout" status --porcelain --untracked-files=no)
+    [[ -z $git_status ]] || die "We-Amp checkout has modified tracked files"
+    prepare_pagespeed_vendor "$checkout"
     sha=$(sha256sum "$sources/nginx-$NGINX.tar.gz")
     result="$work/pagespeed/$profile"
     mkdir -p "$result"
@@ -448,7 +522,11 @@ compile_inside() {
                     dpkg-query -S "${library#/usr}" 2>/dev/null ||
                     dpkg-query -S "/usr$library" 2>/dev/null ||
                     die "Could not identify the package providing $library")
-                printf '%s\n' "${package%%: /*}"
+                printf '%s\n' "$package" |
+                    awk -F ': /' '$1 ~ /^[a-z0-9][a-z0-9+.-]*(:[a-z0-9-]+)?(, [a-z0-9][a-z0-9+.-]*(:[a-z0-9-]+)?)*$/ && NF == 2 {
+                        count = split($1, owners, ", ")
+                        for (i = 1; i <= count; i++) print owners[i]
+                    }'
             else
                 rpm -qf --queryformat '%{NAME}\n' "$(readlink -f "$library")"
             fi
@@ -460,6 +538,9 @@ collect_packages() {
     profile_info "$1"
     check_os
     local packages=()
+    if [[ $family == deb ]]; then
+        sed -i '/^diversion by .* \(from\|to\)$/d' /out/runtime-packages.txt
+    fi
     mapfile -t packages < /out/runtime-packages.txt
     (("${#packages[@]}")) || die "Empty list of runtime packages"
     mkdir -p /out/packages
@@ -489,8 +570,8 @@ case "${1:-}" in
         if [[ $1 == __compile ]]; then compile_inside "$2" "$3"; else collect_packages "$2"; fi
         exit
         ;;
-    prepare|pagespeed|build) ;;
-    *) die "Usage: bash build.sh {prepare|pagespeed|build} PROFILE [PAGESPEED_CHECKOUT]" ;;
+    prepare|pagespeed|build|package) ;;
+    *) die "Usage: bash build.sh {prepare|pagespeed|build|package} PROFILE [PAGESPEED_CHECKOUT_OR_SAVED_BUILD_DIR]" ;;
 esac
 
 action=$1
@@ -524,26 +605,38 @@ fi
 docker image inspect "$tag" >/dev/null || die "Prepare the builder image first"
 jobs=${JOBS:-$(nproc)}
 [[ $jobs =~ ^[1-9][0-9]*$ ]] || die "JOBS must be a positive integer"
-tmp=$(mktemp -d "$work/$profile.XXXXXX")
 build_log="$work/$profile-build.log"
+if [[ $action == package ]]; then
+    [[ -n ${3:-} ]] || die 'Pass the saved build directory'
+    tmp=$(cd -- "$3" && pwd -P)
+    [[ $tmp == "$work/$profile."* && ${tmp#"$work/"} != */* ]] ||
+        die "Expected a saved $profile build directory directly under $work"
+    out="$tmp/stack"
+    [[ -s $out/runtime-packages.txt && -x $out/payload$PHP_PREFIX/bin/php &&
+        -x $out/payload$NGINX_PREFIX/sbin/nginx && $(head -n1 "$out/target") == "$profile" ]] ||
+        die "Incomplete build for $profile in $out"
+    build_log="$work/$profile-package.log"
+else
+    tmp=$(mktemp -d "$work/$profile.XXXXXX")
+    out="$tmp/stack"
+    mkdir "$out"
+fi
 trap '
     status=$?
     if (( status == 0 )); then
-        rm -rf -- "$tmp"
+        if [[ $action == build ]]; then rm -rf -- "$tmp"; fi
     else
         printf "Build failed (exit %d).\nLog: %s\nWork files: %s\n" "$status" "$build_log" "$tmp" >&2
     fi
 ' EXIT
 printf 'Build log: %s\n' "$build_log"
-out="$tmp/stack"
-mkdir "$out"
 mounts=(
     --mount "type=bind,src=$project,dst=/project,readonly"
     --mount "type=bind,src=$sources,dst=/sources,readonly"
     --mount "type=bind,src=$out,dst=/out"
     --env "BUILD_OUTPUT_OWNER=$(id -u):$(id -g)"
 )
-if [[ $pagespeed != none ]]; then
+if [[ $action == build && $pagespeed != none ]]; then
     ps_dir=${PAGESPEED_DIR:-"$work/pagespeed/$profile"}
     [[ -s $ps_dir/ngx_pagespeed_module.so && -s $ps_dir/BUILD.txt ]] ||
         die "Prepare PageSpeed for $profile following README.md (target: $pagespeed)"
@@ -552,9 +645,11 @@ if [[ $pagespeed != none ]]; then
     cp "$ps_dir/BUILD.txt" "$out/pagespeed-build.txt"
 fi
 (
-    printf '== Compile %s ==\n' "$profile"
-    docker run --rm --network none "${mounts[@]}" --entrypoint bash "$tag" \
-        /project/build.sh __compile "$profile" "$jobs"
+    if [[ $action == build ]]; then
+        printf '== Compile %s ==\n' "$profile"
+        docker run --rm --network none "${mounts[@]}" --entrypoint bash "$tag" \
+            /project/build.sh __compile "$profile" "$jobs"
+    fi
     printf '== Download runtime packages ==\n'
     docker run --rm "${mounts[@]}" --entrypoint bash "$tag" \
         /project/build.sh __packages "$profile"

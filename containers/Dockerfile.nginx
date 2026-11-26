@@ -1,0 +1,29 @@
+FROM nginx:1.30.8-trixie AS modules
+ARG JOBS=4
+RUN set -eux; apt-get update; apt-get install -y --no-install-recommends \
+    build-essential ca-certificates cmake curl git gnupg libgeoip-dev libpcre2-dev libssl-dev zlib1g-dev; \
+    mkdir /build; cd /build; \
+    for suffix in '' .asc; do curl -fsSLO "https://nginx.org/download/nginx-$NGINX_VERSION.tar.gz$suffix"; done; \
+    for key in arut pluknet sb thresh nginx_signing; do \
+        curl -fsSLo "$key.key" "https://nginx.org/keys/$key.key"; gpg --batch --import "$key.key"; done; \
+    gpg --batch --verify "nginx-$NGINX_VERSION.tar.gz.asc" "nginx-$NGINX_VERSION.tar.gz"; \
+    tar -xzf "nginx-$NGINX_VERSION.tar.gz"; \
+    git clone https://github.com/google/ngx_brotli.git brotli; \
+    git -C brotli checkout --detach 53e0fb55f250f48fe80c0ddbf6c0f7103cdbaae1; \
+    git -C brotli submodule update --init --recursive; \
+    cmake -S brotli/deps/brotli -B brotli/deps/brotli/out -DCMAKE_BUILD_TYPE=Release -DCMAKE_POSITION_INDEPENDENT_CODE=ON; \
+    cmake --build brotli/deps/brotli/out --parallel "$JOBS"; \
+    git clone https://github.com/openresty/headers-more-nginx-module.git headers-more; \
+    git -C headers-more checkout --detach e30b10e0bb1cfb042d76ba3a865410ff95d65660; \
+    git clone https://github.com/evanmiller/mod_zip.git mod_zip; \
+    git -C mod_zip checkout --detach a17f1c12b5726fed0504ce30cefce476a0ef5da5; \
+    cd "nginx-$NGINX_VERSION"; \
+    ./configure --with-compat --with-http_geoip_module=dynamic \
+        --add-dynamic-module=../brotli --add-dynamic-module=../headers-more --add-dynamic-module=../mod_zip; \
+    make -j"$JOBS" modules
+FROM nginx:1.30.8-trixie
+RUN apt-get update && apt-get install -y --no-install-recommends libgeoip1t64 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=modules /build/nginx-1.30.8/objs/*.so /usr/lib/nginx/modules/
+COPY nginx.conf /etc/nginx/nginx.conf
+RUN nginx -t
