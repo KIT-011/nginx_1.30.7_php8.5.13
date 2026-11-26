@@ -32,6 +32,8 @@ trap 'rm -rf -- "$staging"' EXIT
 bundle="$staging/$release"
 mkdir "$bundle"
 cp compose.yaml nginx.conf "$bundle/"
+mkdir "$bundle/bitrix"
+cp bitrix/compose.yml bitrix/site.env.example bitrix/README.md "$bundle/bitrix/"
 printf 'NGINX_IMAGE=%s\nPHP_IMAGE=%s\n' "$nginx_image" "$php_image" > "$bundle/images.env"
 docker image save -o "$bundle/images.tar" "$nginx_image" "$php_image"
 tar -C "$staging" -czf "$staging/$archive" "$release"

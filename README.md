@@ -18,6 +18,8 @@ NGINX_VERSION=1.30.8 PHP_VERSION=8.5.13 RELEASE=r1 bash build.sh
 
 ## 2. Загрузите комплект на сервер
 
+Для действующего Bitrix с настройками nginx и Apache на хосте используйте [отдельный шаблон Compose](containers/bitrix/README.md). Он входит в комплект в каталоге `bitrix/`.
+
 Перенесите архив и его `.sha256` в постоянный каталог Compose, например `/opt/web-stack`. Выполните из этого каталога:
 
 ```bash

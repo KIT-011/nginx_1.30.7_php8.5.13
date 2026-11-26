@@ -15,7 +15,7 @@ RUN set -eux; \
         if (index(upstream, want "-") == 1) { print v; exit } }')"; \
     if [ -z "$version" ]; then echo "PHP $PHP_VERSION is unavailable in the signed repository" >&2; exit 1; fi; \
     set -- "libapache2-mod-php$series=$version"; \
-    for ext in cli common bcmath bz2 curl gd gmp intl ldap mbstring mysql pgsql sqlite3 xml zip; do \
+    for ext in cli common bcmath bz2 curl gd gmp intl ldap mbstring mysql pgsql readline sqlite3 xml zip; do \
         set -- "$@" "php$series-$ext=$version"; \
     done; \
     apt-get install -y --no-install-recommends apache2 "$@" "php$series-pspell"; \
@@ -24,10 +24,22 @@ RUN set -eux; \
     printf '%s\n' 'ServerName localhost' '<Directory /var/www/html>' '    AllowOverride All' \
         '    Options -Indexes' '</Directory>' > /etc/apache2/conf-available/site.conf; \
     a2enconf site; \
-    "php$series" -r 'exit(PHP_VERSION !== $argv[1] || !function_exists("mysqli_report") || !extension_loaded("pspell") || !gd_info()["WebP Support"]);' "$PHP_VERSION"; \
     apache2ctl configtest; \
-    apache2ctl -M | grep -q 'php_module'; \
     rm -rf /var/lib/apt/lists/* /tmp/sury-keyring.deb
+COPY --chmod=0755 apache-foreground.sh /usr/local/bin/apache-foreground
+COPY check-php.php /tmp/check-php.php
+RUN set -eu; \
+    result=$(php /tmp/check-php.php) || { printf '%s\n' "$result" >&2; exit 1; }; \
+    test "$result" = "cli $PHP_VERSION"; \
+    install -m 0644 /tmp/check-php.php /var/www/html/check-php.php; \
+    apache-foreground & pid=$!; \
+    trap 'kill "$pid" 2>/dev/null || true; wait "$pid" || true' EXIT; \
+    for attempt in 1 2 3 4 5; do \
+        if result=$(curl --noproxy '*' --silent --max-time 3 http://127.0.0.1/check-php.php); then break; fi; \
+        sleep 1; \
+    done; \
+    if [ "$result" != "apache2handler $PHP_VERSION" ]; then printf 'Apache check: %s\n' "$result" >&2; exit 1; fi; \
+    rm -f /tmp/check-php.php /var/www/html/check-php.php
 EXPOSE 80
 STOPSIGNAL SIGWINCH
-CMD ["sh", "-c", ". /etc/apache2/envvars && mkdir -p \"$APACHE_RUN_DIR\" \"$APACHE_LOCK_DIR\" && rm -f \"$APACHE_PID_FILE\" && exec /usr/sbin/apache2 -D FOREGROUND"]
+CMD ["apache-foreground"]

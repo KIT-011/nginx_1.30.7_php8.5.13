@@ -1,0 +1,79 @@
+services:
+  nginx:
+    image: "${NGINX_IMAGE:?Set NGINX_IMAGE to a locally loaded image}"
+    pull_policy: never
+    container_name: "${NGINX_CONTAINER_NAME:-nginx-web}"
+    network_mode: host
+    restart: unless-stopped
+    extra_hosts:
+      httpd: "127.0.0.1"
+      push: "127.0.0.1"
+    entrypoint: ["nginx"]
+    command: ["-g", "daemon off;"]
+    volumes:
+      - type: bind
+        source: "${NGINX_CONFIG_DIR:-/etc/nginx}"
+        target: /etc/nginx
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SITE_DIR:?Set SITE_DIR to the existing Bitrix site directory}"
+        target: "${NGINX_SITE_DIR:-${SITE_DIR}}"
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${NGINX_HTML_DIR:-/usr/share/nginx/html}"
+        target: /usr/share/nginx/html
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${NGINX_LOG_DIR:-/var/log/nginx}"
+        target: /var/log/nginx
+        bind:
+          create_host_path: false
+    logging: &local_logging
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  apache:
+    image: "${PHP_IMAGE:-offline-php-apache:local}"
+    pull_policy: never
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      PHPRC: /etc/offline-php/php.ini
+      PHP_INI_SCAN_DIR: ":/etc/offline-php/conf.d"
+    volumes:
+      - type: bind
+        source: "${PHP_CONFIG_DIR:-./php}"
+        target: /etc/offline-php
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${APACHE_CONFIG_DIR:-/etc/apache2}"
+        target: /etc/apache2
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${APACHE_LOG_DIR:-/var/log/apache2}"
+        target: /var/log/apache2
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${APACHE_STATE_DIR:-/var/lib/apache2}"
+        target: /var/lib/apache2
+        bind:
+          create_host_path: false
+      - type: bind
+        source: "${SITE_DIR:?Set SITE_DIR to the existing Bitrix site directory}"
+        target: "${APACHE_SITE_DIR:-${SITE_DIR}}"
+        bind:
+          create_host_path: false
+    logging: *local_logging
